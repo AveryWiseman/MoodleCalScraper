@@ -1,0 +1,259 @@
+from selenium import webdriver
+from selenium.webdriver.firefox.service import Service
+from selenium.webdriver.firefox.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from bs4 import BeautifulSoup
+from ics import Calendar, Event
+from datetime import datetime, timedelta
+import pandas as pd
+import re
+import time
+
+# Path to GeckoDriver and Firefox binary
+gecko_driver_path = r"Path"
+firefox_binary_path = r"Path"
+
+# Set up the Firefox options and specify the binary location
+firefox_options = Options()
+firefox_options.binary_location = firefox_binary_path
+firefox_options.headless = False  # Set to False to see the browser while debugging
+
+# Set up the Firefox WebDriver
+service = Service(gecko_driver_path)
+driver = webdriver.Firefox(service=service, options=firefox_options)
+
+# Navigate to the Moodle login page
+driver.get('LoginPage')
+
+# Wait for the page to load
+time.sleep(3)
+
+# Click on the "Staff/Students" button to go to the Microsoft SSO page
+sso_button = driver.find_element(By.XPATH, 'Viewsource, xpath ')
+sso_button.click()
+
+# Wait for the Microsoft login page to load
+time.sleep(5)
+
+# Now we are on the Microsoft SSO page. Find the email field and enter your school email
+email_field = driver.find_element(By.NAME, 'loginfmt')
+email_field.send_keys('')  # Replace with your email
+
+# Click the "Next" button to proceed
+next_button = driver.find_element(By.ID, 'idSIButton9')  # "Next" button on Microsoft login
+next_button.click()
+
+# Wait for the password page to load
+time.sleep(5)
+
+# Find the password field and enter your password
+password_field = driver.find_element(By.NAME, 'passwd')
+password_field.send_keys('')  # Replace with your password
+
+# Click the "Sign In" button
+sign_in_button = driver.find_element(By.ID, 'idSIButton9')  # Same button ID for sign in
+sign_in_button.click()
+
+# Add delay to allow redirection and potentially handle MFA
+input("Please complete the 2FA process and press Enter to continue...")
+
+# Handle the "Stay signed in?" prompt
+try:
+    stay_signed_in_button = driver.find_element(By.ID, 'idBtn_Back')
+    stay_signed_in_button.click()
+except:
+    print("No 'Stay signed in?' prompt found.")
+
+# Now the browser should be logged in and redirected to the Moodle dashboard
+driver.get('insert calender link')
+
+# Add a delay to ensure the calendar page is fully loaded
+time.sleep(5)
+print("Calendar page loaded, extracting events...")
+
+events = []
+
+# Set the target group (e.g., Group E)
+target_group = "E"
+
+# Dictionary to keep track of unique events per day
+processed_events = {}
+
+# Track the previous date
+previous_date = None
+current_month = None
+
+# Date parsing helper function
+def parse_date(date_str):
+    cleaned_date_str = re.sub(r'(\d+)(st|nd|rd|th)', r'\1', date_str)
+    return datetime.strptime(cleaned_date_str, '%A %d %b, %Y')
+
+# Function to refresh calendar days to avoid stale references
+def get_calendar_days():
+    return driver.find_elements(By.CLASS_NAME, 'day')
+
+# Get initial calendar days
+calendar_days = get_calendar_days()
+
+# Loop through each day, click it to load events, and scrape the event data
+for index in range(len(calendar_days)):
+    try:
+        # Re-locate calendar days if needed to avoid stale element reference
+        calendar_days = get_calendar_days()
+        day_section = calendar_days[index]
+
+        print(f"Processing day {index + 1}: {day_section.text.strip()}")  # Print the current day
+
+        # Click the day to load the events
+        day_section.click()
+
+        # Wait for the events to load (use WebDriverWait instead of time.sleep)
+        try:
+            WebDriverWait(driver, 20).until(
+                EC.presence_of_element_located((By.CLASS_NAME, 'event-box'))
+            )
+        except:
+            print(f"No events loaded for day {index + 1}.")
+            continue
+
+        # Reparse the page source after events are loaded
+        soup = BeautifulSoup(driver.page_source, 'html.parser')
+
+        # Extract the date once per day
+        date_element = soup.find('div', id='day-title')
+        if date_element:
+            date_str = date_element.text.strip()
+            current_date = parse_date(date_str)
+
+            # Check if the month has changed, reset the counter if so
+            if current_month is None:
+                current_month = current_date.month
+            elif current_date.month != current_month:
+                print(f"Month changed to {current_date.month}, resetting counter.")
+                current_month = current_date.month
+                previous_date = None
+
+        # Extract event boxes for this day
+        event_boxes = soup.find_all('div', class_='col-md-5 event-box no-left-margin')
+
+        if not event_boxes:
+            print("No event boxes found for this day.")
+        else:
+            print(f"Found {len(event_boxes)} event boxes.")
+
+        # Extract individual events from each box
+        for event_box in event_boxes:
+            event_items = event_box.find_all('div', class_='event-item')
+            for event in event_items:
+                time_element = event.find('div', class_='event-time').text.strip()
+                name_location = event.find('div', class_='event-name-location').text.strip()
+
+                # Skip "Free Slot" and "Break" events
+                if "Free Slot" in name_location or "Break" in name_location:
+                    print(f"Skipping event: {name_location}")
+                    continue
+
+                # Extract additional fields like tutor, location, notes, and course link - this may change based on what they use for your school
+                tutor = event.find('div', class_='event-presenter').text.strip() if event.find('div', class_='event-presenter') else "N/A"
+                location = event.find('div', class_='event-location').text.strip() if event.find('div', class_='event-location') else "N/A"
+                notes = event.find('div', class_='event-notes').text.strip() if event.find('div', class_='event-notes') else "N/A"
+                course_link_element = event.find('div', 'gotocourse').find('a') if event.find('div', 'gotocourse') else None
+                course_link = course_link_element['href'] if course_link_element else "N/A"
+
+                # Ensure the event is unique for the day
+                event_key = f"{date_str}-{name_location}-{time_element}"
+                if event_key in processed_events:
+                    print(f"Skipping duplicate event: {event_key}")
+                    continue
+
+                # Add the event to processed events
+                processed_events[event_key] = True
+
+                # Extract the group information from the notes
+                group_info = "Unknown Group"
+                if "Group" in notes:
+                    group_info = notes.split("Group: ")[-1].strip()
+
+                # Filter only events for "All groups" or for the target group (e.g., Group E)
+                if group_info == "All" or group_info == target_group:
+                    print(f"Event found: Time: {time_element}, Name/Location: {name_location}, Group: {group_info}, Tutor: {tutor}, Location: {location}, Notes: {notes}, Course Link: {course_link}")
+                    events.append({
+                        'date': date_str,  # Apply the captured date
+                        'time': time_element,
+                        'event': name_location,
+                        'group': group_info,
+                        'tutor': tutor,
+                        'location': location,
+                        'notes': notes,
+                        'course_link': course_link
+                    })
+    except Exception as e:
+        print(f"Encountered an error while processing day {index + 1}: {e}")
+        continue  # Skip this day and move to the next one if an error occurs
+
+# Close the browser after extracting all data
+driver.quit()
+
+# Convert the list of events to a pandas DataFrame
+df = pd.DataFrame(events)
+
+# Date parsing helper function
+def custom_date_parser(date_str):
+    try:
+        # Remove 'st', 'nd', 'rd', 'th' suffixes from the day part of the date
+        cleaned_date_str = re.sub(r'(\d+)(st|nd|rd|th)', r'\1', date_str)
+        # Parse the cleaned date string assuming it is in the format: 'DayOfWeek Day Month Year'
+        parsed_date = datetime.strptime(cleaned_date_str, '%A %d %b, %Y')
+        return parsed_date
+    except ValueError:
+        print(f"Error parsing date: {date_str}")
+        return pd.NaT  # Return NaT for invalid dates
+
+# Updated time parsing function
+def parse_time(time_str):
+    try:
+        start_time, end_time = time_str.split('-')
+        return start_time.replace('.', ':'), end_time.replace('.', ':')  # Replace period with colon
+    except ValueError:
+        print(f"Invalid time format: {time_str}")
+        return "00:00", "00:00"  # Return fallback times if invalid format
+
+# Ensure 'time' column exists before parsing it
+if 'time' in df.columns:
+    # Apply the custom parsers to the 'date' and 'time' columns
+    df['date'] = df['date'].apply(custom_date_parser)
+    df['start_time'], df['end_time'] = zip(*df['time'].apply(parse_time))
+
+# Now creating the ICS file
+calendar = Calendar()
+
+for index, row in df.iterrows():
+    if pd.notna(row['date']):  # Ensure the date is not NaT before formatting
+        event = Event()
+        event.name = row['event']
+
+        # Print the date, time, and event details before adding to ICS
+        print(f"Event being added to ICS:")
+        print(f"  Date: {row['date'].strftime('%Y-%m-%d')}")
+        print(f"  Start time: {row['start_time']}")
+        print(f"  End time: {row['end_time']}")
+        print(f"  Event: {row['event']}")
+        print(f"  Location: {row['location']}")
+        print(f"  Tutor: {row['tutor']}")
+        print(f"  Notes: {row['notes']}")
+        print(f"  Course link: {row['course_link']}\n")
+
+        event.begin = f"{row['date'].strftime('%Y-%m-%d')} {row['start_time']}"
+        event.end = f"{row['date'].strftime('%Y-%m-%d')} {row['end_time']}"
+        event.description = f"Tutor: {row['tutor']}\nLocation: {row['location']}\nNotes: {row['notes']}\nCourse Link: {row['course_link']}"
+        calendar.events.add(event)
+    else:
+        print(f"Skipping event with missing date: {row['event']}")
+
+# Save the calendar to an .ics file
+with open('calendar.ics', 'w') as f:
+    f.writelines(calendar)
+
+print("ICS file created: calendar.ics")
