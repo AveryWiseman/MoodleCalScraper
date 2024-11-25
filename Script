@@ -163,7 +163,7 @@ def extract_month_events():
                 course_link = course_link_element['href'] if course_link_element else "N/A"
 
                 # Ensure the event is unique for the day
-                event_key = f"{date_str}-{name_location}-{time_element}"
+                event_key = f"{date_str}-{name_location}-{time_element}-{notes}"
                 if event_key in processed_events:
                     print(f"Skipping duplicate event: {event_key}")
                     continue
@@ -172,9 +172,15 @@ def extract_month_events():
                 processed_events[event_key] = True
 
                 # Extract the group information from the notes
-                group_info = "Unknown Group"
-                if "Group" in notes:
-                    group_info = notes.split("Group: ")[-1].strip()
+               group_info = "Unknown Group"
+                if "Group: All" in notes:
+                    group_info = "All"
+                else:
+                    match = re.search(r"Group:\s*([A-Z])", notes)
+                    if match:
+                        group_info = match.group(1)
+                    else:
+                        group_info = "Unknown Group"
 
                 # Filter only events for "All groups" or for the target group (e.g., Group E)
                 if group_info == "All" or group_info == target_group:
